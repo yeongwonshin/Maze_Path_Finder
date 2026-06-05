@@ -1,6 +1,8 @@
 #include "ofMain.h"
 #include "ofApp.h"
 
+#include <memory>
+
 // ============================================================
 // main.cpp
 // ------------------------------------------------------------
@@ -16,9 +18,10 @@ int main() {
     // 미로 영역과 우측 설명 패널을 동시에 보여주기 위해 1280x820으로 설정했습니다.
     ofSetupOpenGL(1280, 820, OF_WINDOW);
 
-    // ofRunApp(new ofApp())
+    // ofRunApp(std::make_shared<ofApp>())
     // - OpenFrameworks의 이벤트 루프를 시작합니다.
+    // - raw new 대신 smart pointer를 사용하여 앱 객체의 소유권을 OpenFrameworks에 안전하게 넘깁니다.
     // - 이후 setup(), update(), draw(), keyPressed(), mousePressed() 등이
     //   프레임 또는 사용자 입력에 맞추어 자동 호출됩니다.
-    ofRunApp(new ofApp());
+    ofRunApp(std::make_shared<ofApp>());
 }
