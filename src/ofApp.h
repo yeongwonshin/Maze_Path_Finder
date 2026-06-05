@@ -3,6 +3,7 @@
 #include "ofMain.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -82,7 +83,17 @@ struct SearchStats {
     int visitedCount = 0;     // 탐색 과정에서 방문 처리된 칸 수입니다.
     int pathLength = 0;       // 최종 경로에 포함된 칸 수입니다. 시작점과 도착점을 포함합니다.
     int pathCost = 0;         // 최종 경로의 총 이동 비용입니다. 가중치 칸을 지나면 증가합니다.
+    int edgeChecks = 0;       // 이웃 간선을 검사한 횟수입니다. 실제 시간복잡도 비교 근거로 사용합니다.
+    int maxFrontierSize = 0;  // queue, stack, priority_queue가 동시에 보관한 최대 후보 수입니다.
+    int auxiliaryCells = 0;   // visited, parent, dist 등 보조 배열이 사용하는 대략적 셀 단위 공간입니다.
     double elapsedMs = 0.0;   // 알고리즘 계산에 걸린 시간입니다. 애니메이션 시간은 제외합니다.
+};
+
+// Compare All 모드에서 알고리즘별 결과를 한 줄씩 저장하기 위한 구조체입니다.
+// 같은 미로에 대해 BFS, DFS, Dijkstra, A*를 연속 실행한 뒤 표 형태로 출력합니다.
+struct AlgorithmSnapshot {
+    std::string name;
+    SearchStats stats;
 };
 
 class ofApp : public ofBaseApp {
@@ -162,6 +173,9 @@ private:
     std::string currentAlgorithmName = "None";
     SearchStats lastStats;
 
+    // 5 키를 눌렀을 때 네 알고리즘의 결과를 한 번에 비교하여 저장합니다.
+    std::vector<AlgorithmSnapshot> comparisonResults;
+
     // ------------------------------------------------------------
     // 3. 화면 배치 및 입력 상태
     // ------------------------------------------------------------
@@ -217,6 +231,7 @@ private:
     void runDFS();
     void runDijkstra();
     void runAStar();
+    void runAllAlgorithmsForComparison();
 
     // ------------------------------------------------------------
     // 7. 랜덤 미로 생성 및 마우스 편집 함수
@@ -232,5 +247,6 @@ private:
     void drawMaze() const;
     void drawSidePanel() const;
     void drawLegend(int x, int y) const;
+    void drawComparisonTable(int x, int& y) const;
     void drawHelpBox(int x, int y) const;
 };
