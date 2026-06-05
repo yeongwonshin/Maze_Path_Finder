@@ -1,0 +1,7 @@
+.DS_Store
+.vs/
+build/
+obj/
+bin/*.app
+bin/*.exe
+bin/*.dSYM
