@@ -116,21 +116,28 @@ void ofApp::draw() {
 // keyPressed()
 // ------------------------------------------------------------
 // 키보드 입력을 처리합니다.
-// 1~4는 알고리즘 실행, M/L/G/C/R/P/+/-/H는 편집 및 표시 옵션입니다.
+// 1~4는 단일 알고리즘 실행, 5는 네 알고리즘 비교 실행, M/L/G/C/R/P/+/-/H는 편집 및 표시 옵션입니다.
 // ------------------------------------------------------------
 void ofApp::keyPressed(int key) {
     switch (key) {
         case '1':
+            comparisonResults.clear();
             runBFS();
             break;
         case '2':
+            comparisonResults.clear();
             runDFS();
             break;
         case '3':
+            comparisonResults.clear();
             runDijkstra();
             break;
         case '4':
+            comparisonResults.clear();
             runAStar();
+            break;
+        case '5':
+            runAllAlgorithmsForComparison();
             break;
         case 'm':
         case 'M': {
@@ -411,6 +418,7 @@ void ofApp::resetSearchState() {
     isPaused = false;
     currentAlgorithmName = "None";
     lastStats = SearchStats{};
+    comparisonResults.clear();
     initializeVisibleArrays();
 }
 
@@ -582,6 +590,8 @@ void ofApp::runBFS() {
     q.push(start);
     visited[start.row][start.col] = true;
 
+    int edgeChecks = 0;
+    int maxFrontierSize = static_cast<int>(q.size());
     bool found = false;
 
     // queue가 빌 때까지 탐색합니다.
@@ -599,10 +609,12 @@ void ofApp::runBFS() {
         // 현재 칸의 상하좌우 이웃을 확인합니다.
         // 아직 방문하지 않은 통과 가능 칸만 queue에 넣고 parent를 기록합니다.
         for (const Node& next : getNeighbors(cur)) {
+            ++edgeChecks;
             if (!visited[next.row][next.col]) {
                 visited[next.row][next.col] = true;
                 parent[next.row][next.col] = cur;
                 q.push(next);
+                maxFrontierSize = std::max(maxFrontierSize, static_cast<int>(q.size()));
             }
         }
     }
@@ -617,6 +629,9 @@ void ofApp::runBFS() {
     stats.visitedCount = static_cast<int>(visitedOrder.size());
     stats.pathLength = static_cast<int>(path.size());
     stats.pathCost = computePathCost(path);
+    stats.edgeChecks = edgeChecks;
+    stats.maxFrontierSize = maxFrontierSize;
+    stats.auxiliaryCells = rows * cols * 2 + maxFrontierSize;
     stats.elapsedMs = elapsedMs;
 
     prepareAnimation("BFS", visitedOrder, path, stats);
@@ -641,6 +656,8 @@ void ofApp::runDFS() {
     st.push(start);
     visited[start.row][start.col] = true;
 
+    int edgeChecks = 0;
+    int maxFrontierSize = static_cast<int>(st.size());
     bool found = false;
 
     // stack의 LIFO 특성 때문에 가장 최근에 넣은 이웃을 먼저 탐색합니다.
@@ -662,10 +679,12 @@ void ofApp::runDFS() {
         std::reverse(neighbors.begin(), neighbors.end());
 
         for (const Node& next : neighbors) {
+            ++edgeChecks;
             if (!visited[next.row][next.col]) {
                 visited[next.row][next.col] = true;
                 parent[next.row][next.col] = cur;
                 st.push(next);
+                maxFrontierSize = std::max(maxFrontierSize, static_cast<int>(st.size()));
             }
         }
     }
@@ -680,6 +699,9 @@ void ofApp::runDFS() {
     stats.visitedCount = static_cast<int>(visitedOrder.size());
     stats.pathLength = static_cast<int>(path.size());
     stats.pathCost = computePathCost(path);
+    stats.edgeChecks = edgeChecks;
+    stats.maxFrontierSize = maxFrontierSize;
+    stats.auxiliaryCells = rows * cols * 2 + maxFrontierSize;
     stats.elapsedMs = elapsedMs;
 
     prepareAnimation("DFS", visitedOrder, path, stats);
@@ -705,6 +727,8 @@ void ofApp::runDijkstra() {
     dist[start.row][start.col] = 0;
     pq.push({start.row, start.col, 0, 0});
 
+    int edgeChecks = 0;
+    int maxFrontierSize = static_cast<int>(pq.size());
     bool found = false;
 
     // priority_queue에서 꺼낸 칸은 현재까지 알려진 비용이 가장 작은 후보입니다.
@@ -729,11 +753,13 @@ void ofApp::runDijkstra() {
         // Relaxation 단계입니다.
         // 현재 칸을 거쳐 이웃으로 가는 비용이 기존 dist보다 작으면 dist와 parent를 갱신합니다.
         for (const Node& next : getNeighbors(cur)) {
+            ++edgeChecks;
             const int newDist = dist[cur.row][cur.col] + getMoveCost(next.row, next.col);
             if (newDist < dist[next.row][next.col]) {
                 dist[next.row][next.col] = newDist;
                 parent[next.row][next.col] = cur;
                 pq.push({next.row, next.col, newDist, newDist});
+                maxFrontierSize = std::max(maxFrontierSize, static_cast<int>(pq.size()));
             }
         }
     }
@@ -748,6 +774,9 @@ void ofApp::runDijkstra() {
     stats.visitedCount = static_cast<int>(visitedOrder.size());
     stats.pathLength = static_cast<int>(path.size());
     stats.pathCost = found ? dist[goal.row][goal.col] : 0;
+    stats.edgeChecks = edgeChecks;
+    stats.maxFrontierSize = maxFrontierSize;
+    stats.auxiliaryCells = rows * cols * 3 + maxFrontierSize;
     stats.elapsedMs = elapsedMs;
 
     prepareAnimation("Dijkstra", visitedOrder, path, stats);
@@ -773,6 +802,8 @@ void ofApp::runAStar() {
     gScore[start.row][start.col] = 0;
     pq.push({start.row, start.col, manhattanDistance(start, goal), 0});
 
+    int edgeChecks = 0;
+    int maxFrontierSize = static_cast<int>(pq.size());
     bool found = false;
 
     // priority_queue는 f(n)=g(n)+h(n)이 작은 칸을 먼저 꺼냅니다.
@@ -797,6 +828,7 @@ void ofApp::runAStar() {
         // 현재 칸을 통해 이웃으로 이동하는 실제 비용 g를 계산합니다.
         // f는 이 실제 비용에 goal까지의 Manhattan Distance를 더한 값입니다.
         for (const Node& next : getNeighbors(cur)) {
+            ++edgeChecks;
             const int tentativeG = gScore[cur.row][cur.col] + getMoveCost(next.row, next.col);
             if (tentativeG < gScore[next.row][next.col]) {
                 gScore[next.row][next.col] = tentativeG;
@@ -804,6 +836,7 @@ void ofApp::runAStar() {
 
                 const int fScore = tentativeG + manhattanDistance(next, goal);
                 pq.push({next.row, next.col, fScore, tentativeG});
+                maxFrontierSize = std::max(maxFrontierSize, static_cast<int>(pq.size()));
             }
         }
     }
@@ -818,9 +851,38 @@ void ofApp::runAStar() {
     stats.visitedCount = static_cast<int>(visitedOrder.size());
     stats.pathLength = static_cast<int>(path.size());
     stats.pathCost = found ? gScore[goal.row][goal.col] : 0;
+    stats.edgeChecks = edgeChecks;
+    stats.maxFrontierSize = maxFrontierSize;
+    stats.auxiliaryCells = rows * cols * 3 + maxFrontierSize;
     stats.elapsedMs = elapsedMs;
 
     prepareAnimation("A*", visitedOrder, path, stats);
+}
+
+
+// ------------------------------------------------------------
+// runAllAlgorithmsForComparison()
+// ------------------------------------------------------------
+// 같은 미로, 같은 시작점, 같은 도착점에 대해 네 알고리즘을 연속 실행합니다.
+// 각 알고리즘의 방문 수, 경로 길이, 비용, 간선 검사 수, 최대 frontier 크기를 저장하여
+// 우측 패널의 비교표로 보여 줍니다. 마지막 화면 애니메이션은 비용 최적 경로를 보여주기 쉬운 A* 결과입니다.
+// ------------------------------------------------------------
+void ofApp::runAllAlgorithmsForComparison() {
+    comparisonResults.clear();
+
+    runBFS();
+    comparisonResults.push_back({"BFS", lastStats});
+
+    runDFS();
+    comparisonResults.push_back({"DFS", lastStats});
+
+    runDijkstra();
+    comparisonResults.push_back({"Dijkstra", lastStats});
+
+    runAStar();
+    comparisonResults.push_back({"A*", lastStats});
+
+    currentAlgorithmName = "A* after Compare All";
 }
 
 // ------------------------------------------------------------
@@ -1092,7 +1154,7 @@ void ofApp::drawSidePanel() const {
     ofDrawBitmapString("Maze Pathfinder Lab", panelX, y);
     y += line;
     ofSetColor(COLOR_MUTED_TEXT);
-    ofDrawBitmapString("BFS / DFS / Dijkstra / A* visualizer", panelX, y);
+    ofDrawBitmapString("Weighted search visualizer + comparison", panelX, y);
     y += line * 2;
 
     ofSetColor(COLOR_TEXT);
@@ -1101,6 +1163,7 @@ void ofApp::drawSidePanel() const {
     ofSetColor(COLOR_MUTED_TEXT);
     ofDrawBitmapString("1 BFS        2 DFS", panelX, y); y += line;
     ofDrawBitmapString("3 Dijkstra   4 A*", panelX, y); y += line;
+    ofDrawBitmapString("5 Compare All Algorithms", panelX, y); y += line;
     ofDrawBitmapString("L Load Maze  G Random Maze", panelX, y); y += line;
     ofDrawBitmapString("C Clear      R Reset Result", panelX, y); y += line;
     ofDrawBitmapString("P Pause      +/- Speed", panelX, y); y += line;
@@ -1123,6 +1186,9 @@ void ofApp::drawSidePanel() const {
     ofDrawBitmapString("Visited     : " + std::to_string(lastStats.visitedCount), panelX, y); y += line;
     ofDrawBitmapString("Path Length : " + std::to_string(lastStats.pathLength), panelX, y); y += line;
     ofDrawBitmapString("Path Cost   : " + std::to_string(lastStats.pathCost), panelX, y); y += line;
+    ofDrawBitmapString("Edge Checks : " + std::to_string(lastStats.edgeChecks), panelX, y); y += line;
+    ofDrawBitmapString("Max Frontier: " + std::to_string(lastStats.maxFrontierSize), panelX, y); y += line;
+    ofDrawBitmapString("Aux Space   : " + std::to_string(lastStats.auxiliaryCells) + " cells", panelX, y); y += line;
     ofDrawBitmapString("Time        : " + ofToString(lastStats.elapsedMs, 4) + " ms", panelX, y); y += line * 2;
 
     ofSetColor(COLOR_TEXT);
@@ -1131,7 +1197,10 @@ void ofApp::drawSidePanel() const {
     ofSetColor(COLOR_MUTED_TEXT);
     ofDrawBitmapString("BFS / DFS     : O(V + E)", panelX, y); y += line;
     ofDrawBitmapString("Dijkstra / A* : O((V+E)logV)", panelX, y); y += line;
-    ofDrawBitmapString("Space         : O(V)", panelX, y); y += line * 2;
+    ofDrawBitmapString("Space         : O(V)", panelX, y); y += line;
+    ofDrawBitmapString("Measured frontier/space shown above", panelX, y); y += line * 2;
+
+    drawComparisonTable(panelX, y);
 
     drawLegend(panelX, y);
     y += line * 7;
@@ -1141,6 +1210,42 @@ void ofApp::drawSidePanel() const {
     }
 
     ofPopStyle();
+}
+
+
+// ------------------------------------------------------------
+// drawComparisonTable()
+// ------------------------------------------------------------
+// Compare All 모드에서 저장한 정량 결과를 표 형태로 출력합니다.
+// 단순히 경로가 보이는 것을 넘어서 시간복잡도와 공간복잡도 관찰 지표를 화면에 남깁니다.
+// ------------------------------------------------------------
+void ofApp::drawComparisonTable(int x, int& y) const {
+    const int line = 18;
+
+    if (comparisonResults.empty()) {
+        return;
+    }
+
+    ofSetColor(COLOR_TEXT);
+    ofDrawBitmapString("[Compare All]", x, y);
+    y += line;
+
+    ofSetColor(COLOR_MUTED_TEXT);
+    ofDrawBitmapString("Alg       Visited  Cost  Edges  Frontier", x, y);
+    y += line;
+
+    for (const AlgorithmSnapshot& item : comparisonResults) {
+        const SearchStats& s = item.stats;
+        const std::string row = item.name +
+            "  V:" + std::to_string(s.visitedCount) +
+            " C:" + std::to_string(s.pathCost) +
+            " E:" + std::to_string(s.edgeChecks) +
+            " F:" + std::to_string(s.maxFrontierSize);
+        ofDrawBitmapString(row, x, y);
+        y += line;
+    }
+
+    y += line;
 }
 
 // ------------------------------------------------------------
