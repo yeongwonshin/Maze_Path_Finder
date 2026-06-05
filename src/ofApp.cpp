@@ -1,975 +1,1196 @@
 #include "ofApp.h"
 
+// ============================================================
+// ofApp.cpp
 // ------------------------------------------------------------
-// setup
+// Maze Pathfinder Lab의 실제 동작을 구현하는 파일입니다.
+// 네 가지 탐색 알고리즘(BFS, DFS, Dijkstra, A*)과 화면 시각화,
+// 마우스 편집, 랜덤 미로 생성, 실행 통계 계산을 모두 포함합니다.
+// ============================================================
+
+namespace {
+    // 화면 색상은 한곳에 모아 두면 나중에 디자인을 수정하기 쉽습니다.
+    // 색상 자체는 알고리즘 로직에 영향을 주지 않고, 시각적 구분만 담당합니다.
+    const ofColor COLOR_BACKGROUND(246, 248, 252);
+    const ofColor COLOR_GRID_LINE(220, 224, 230);
+    const ofColor COLOR_EMPTY(255, 255, 255);
+    const ofColor COLOR_WALL(32, 38, 48);
+    const ofColor COLOR_START(52, 168, 83);
+    const ofColor COLOR_GOAL(234, 67, 53);
+    const ofColor COLOR_WEIGHT(252, 214, 112);
+    const ofColor COLOR_VISITED(111, 170, 255, 160);
+    const ofColor COLOR_PATH(255, 122, 89, 220);
+    const ofColor COLOR_TEXT(30, 36, 46);
+    const ofColor COLOR_MUTED_TEXT(90, 99, 115);
+
+    // 도착할 수 없는 상태를 나타내는 충분히 큰 값입니다.
+    // Dijkstra와 A*의 dist 배열 초기값으로 사용됩니다.
+    constexpr int INF = std::numeric_limits<int>::max() / 4;
+}
+
 // ------------------------------------------------------------
-// Initializes sample file list, loads the first maze, and sets drawing options.
-// This function is called once at program start by OpenFrameworks.
+// setup()
+// ------------------------------------------------------------
+// 프로그램 시작 시 한 번만 호출됩니다.
+// 샘플 미로 목록, 기본 미로, 화면 배치, 애니메이션 배열을 초기화합니다.
+// ------------------------------------------------------------
 void ofApp::setup() {
     ofSetWindowTitle("Maze Pathfinder Lab - BFS / DFS / Dijkstra / A*");
     ofSetFrameRate(60);
-    ofBackground(24, 26, 31);
+    ofBackground(COLOR_BACKGROUND);
 
-    // Sample maze files are stored in bin/data.
-    // The user can cycle through them by pressing L.
-    mazeFiles = {
-        "maze_easy.txt",
-        "maze_weighted.txt",
-        "maze_large.txt"
-    };
+    setupMazeFileList();
 
-    // Load the first sample maze. If loading fails, build a safe default maze
-    // so that the program still runs during grading.
-    if (!loadMazeFromFile(mazeFiles[currentMazeFileIndex])) {
-        generateRandomMaze(25, 35);
+    // 첫 번째 샘플 미로를 읽습니다.
+    // 파일이 없거나 형식이 잘못된 경우에도 프로그램이 멈추지 않도록 빈 미로를 생성합니다.
+    if (!mazeFiles.empty() && !loadMazeFromFile(mazeFiles[currentMazeIndex])) {
+        createEmptyMaze(21, 31);
     }
 
-    resetVisualization();
+    updateLayout();
+    initializeVisibleArrays();
 }
 
 // ------------------------------------------------------------
-// update
+// update()
 // ------------------------------------------------------------
-// Reveals the search result gradually for visualization.
-// The actual algorithm is already computed when the user presses 1/2/3/4.
+// 매 프레임 호출됩니다.
+// 알고리즘 계산은 keyPressed()에서 한 번에 끝내고, update()에서는 계산된
+// visitOrder/finalPath를 일정 속도로 화면에 표시하는 애니메이션만 처리합니다.
+// ------------------------------------------------------------
 void ofApp::update() {
-    if (paused || lastResult.algorithmName.empty()) {
+    if (!isAnimating || isPaused) {
         return;
     }
 
-    // First reveal visited nodes in the order produced by the algorithm.
-    for (int i = 0; i < cellsPerFrame && animationIndex < (int)lastResult.visitOrder.size(); ++i) {
-        Node n = lastResult.visitOrder[animationIndex];
-        if (inBounds(n.row, n.col)) {
-            visibleVisited[n.row][n.col] = true;
-        }
-        animationIndex++;
+    const float now = ofGetElapsedTimef();
+
+    // animationInterval보다 시간이 적게 지났다면 이번 프레임에서는 새 칸을 표시하지 않습니다.
+    // 이렇게 하면 컴퓨터 성능이나 FPS 차이와 무관하게 비슷한 애니메이션 속도를 유지할 수 있습니다.
+    if (now - lastAnimationStepTime < animationInterval) {
+        return;
     }
 
-    // After all visited nodes are displayed, reveal the final path.
-    if (animationIndex >= (int)lastResult.visitOrder.size()) {
-        for (int i = 0; i < cellsPerFrame && pathAnimationIndex < (int)lastResult.path.size(); ++i) {
-            Node n = lastResult.path[pathAnimationIndex];
-            if (inBounds(n.row, n.col)) {
-                visiblePath[n.row][n.col] = true;
-            }
-            pathAnimationIndex++;
+    lastAnimationStepTime = now;
+
+    // 1단계: 방문 순서를 먼저 표시합니다.
+    // BFS/DFS/Dijkstra/A*가 공간을 어떤 순서로 확장하는지 보여주는 부분입니다.
+    if (visitedAnimationIndex < visitOrder.size()) {
+        const Node node = visitOrder[visitedAnimationIndex];
+        if (isInside(node.row, node.col)) {
+            visibleVisited[node.row][node.col] = true;
         }
+        ++visitedAnimationIndex;
+        return;
     }
+
+    // 2단계: 모든 방문 칸이 표시된 후 최종 경로를 표시합니다.
+    // 최종 경로는 parent 배열로 복원된 실제 해답 경로입니다.
+    if (pathAnimationIndex < finalPath.size()) {
+        const Node node = finalPath[pathAnimationIndex];
+        if (isInside(node.row, node.col)) {
+            visiblePath[node.row][node.col] = true;
+        }
+        ++pathAnimationIndex;
+        return;
+    }
+
+    // 방문 순서와 최종 경로를 모두 표시했으면 애니메이션을 종료합니다.
+    isAnimating = false;
 }
 
 // ------------------------------------------------------------
-// draw
+// draw()
 // ------------------------------------------------------------
-// Draws the maze, animated search result, statistics, and guide text.
+// 매 프레임 화면을 다시 그립니다.
+// 미로, 우측 통계 패널, 범례, 도움말을 분리된 함수로 나누어 가독성을 높였습니다.
+// ------------------------------------------------------------
 void ofApp::draw() {
-    ofBackground(24, 26, 31);
-
-    // Recalculate layout so the program adapts to different window sizes.
-    float availableW = ofGetWidth() * 0.68f;
-    float availableH = ofGetHeight() - 60.0f;
-    if (rows > 0 && cols > 0) {
-        cellSize = min(availableW / cols, availableH / rows);
-        cellSize = ofClamp(cellSize, 8.0f, 28.0f);
-    }
-    panelX = mazeX + cols * cellSize + 35.0f;
+    ofBackground(COLOR_BACKGROUND);
 
     drawMaze();
     drawSidePanel();
 }
 
 // ------------------------------------------------------------
-// keyPressed
+// keyPressed()
 // ------------------------------------------------------------
-// Handles all keyboard shortcuts. The shortcuts are shown in the side panel.
+// 키보드 입력을 처리합니다.
+// 1~4는 알고리즘 실행, M/L/G/C/R/P/+/-/H는 편집 및 표시 옵션입니다.
+// ------------------------------------------------------------
 void ofApp::keyPressed(int key) {
-    if (key == '1') {
-        runAndStoreResult(1);
-    } else if (key == '2') {
-        runAndStoreResult(2);
-    } else if (key == '3') {
-        runAndStoreResult(3);
-    } else if (key == '4') {
-        runAndStoreResult(4);
-    } else if (key == 'r' || key == 'R') {
-        resetVisualization();
-    } else if (key == 'l' || key == 'L') {
-        loadNextMazeFile();
-    } else if (key == 'g' || key == 'G') {
-        generateRandomMaze(31, 45);
-        resetVisualization();
-    } else if (key == 'm' || key == 'M') {
-        cycleEditMode();
-    } else if (key == 'p' || key == 'P') {
-        paused = !paused;
-    } else if (key == 'h' || key == 'H') {
-        showHelp = !showHelp;
-    } else if (key == '+' || key == '=') {
-        cellsPerFrame = min(100, cellsPerFrame + 2);
-    } else if (key == '-' || key == '_') {
-        cellsPerFrame = max(1, cellsPerFrame - 2);
-    } else if (key == 'c' || key == 'C') {
-        clearMazeToEmpty(25, 35);
-        resetVisualization();
+    switch (key) {
+        case '1':
+            runBFS();
+            break;
+        case '2':
+            runDFS();
+            break;
+        case '3':
+            runDijkstra();
+            break;
+        case '4':
+            runAStar();
+            break;
+        case 'm':
+        case 'M': {
+            // EditMode를 0~3 정수로 바꾼 뒤 하나 증가시키고 다시 enum으로 변환합니다.
+            // 네 가지 모드를 순환시키기 위해 나머지 연산을 사용합니다.
+            const int nextMode = (static_cast<int>(editMode) + 1) % 4;
+            editMode = static_cast<EditMode>(nextMode);
+            break;
+        }
+        case 'l':
+        case 'L':
+            if (!mazeFiles.empty()) {
+                currentMazeIndex = (currentMazeIndex + 1) % static_cast<int>(mazeFiles.size());
+                loadMazeFromFile(mazeFiles[currentMazeIndex]);
+            }
+            break;
+        case 'g':
+        case 'G':
+            generateRandomMaze();
+            break;
+        case 'c':
+        case 'C':
+            createEmptyMaze(21, 31);
+            break;
+        case 'r':
+        case 'R':
+            resetSearchState();
+            break;
+        case 'p':
+        case 'P':
+            isPaused = !isPaused;
+            break;
+        case '+':
+        case '=':
+            // interval이 작을수록 더 빠르게 표시됩니다.
+            // 너무 작아지면 눈으로 구분하기 어려우므로 하한을 둡니다.
+            animationInterval = std::max(0.003f, animationInterval * 0.75f);
+            break;
+        case '-':
+        case '_':
+            // interval이 클수록 더 느리게 표시됩니다.
+            // 지나치게 느려지는 것을 막기 위해 상한을 둡니다.
+            animationInterval = std::min(0.20f, animationInterval * 1.35f);
+            break;
+        case 'h':
+        case 'H':
+            showHelp = !showHelp;
+            break;
+        default:
+            break;
     }
 }
 
 // ------------------------------------------------------------
-// mousePressed / mouseDragged
+// mousePressed(), mouseDragged()
 // ------------------------------------------------------------
-// The mouse edits the maze according to the current EditMode.
+// 미로를 마우스로 편집합니다.
+// 클릭 또는 드래그 좌표를 미로의 row/col로 변환한 뒤 현재 EditMode에 맞게 수정합니다.
+// ------------------------------------------------------------
 void ofApp::mousePressed(int x, int y, int button) {
-    int r = 0;
-    int c = 0;
-    if (screenToCell(x, y, r, c)) {
-        lastMouseCell = Node(r, c);
-        applyEditToCell(r, c);
+    hasLastEditedCell = false;
+
+    Node cell;
+    if (screenToCell(x, y, cell)) {
+        applyEditToCell(cell.row, cell.col);
+        lastEditedCell = cell;
+        hasLastEditedCell = true;
     }
 }
 
 void ofApp::mouseDragged(int x, int y, int button) {
-    int r = 0;
-    int c = 0;
-    if (screenToCell(x, y, r, c)) {
-        // Dragging is useful mainly for wall drawing and weighted-cell drawing.
-        // lastMouseCell prevents the same cell from being toggled repeatedly.
-        if ((editMode == EditMode::WALL_EDIT || editMode == EditMode::WEIGHT_EDIT) && Node(r, c) != lastMouseCell) {
-            lastMouseCell = Node(r, c);
-            applyEditToCell(r, c);
-        }
+    Node cell;
+    if (!screenToCell(x, y, cell)) {
+        return;
     }
+
+    // 같은 칸에서 drag 이벤트가 여러 번 발생할 수 있습니다.
+    // 벽/가중치 토글이 반복되어 원래 상태로 돌아가는 것을 막기 위해 중복 칸은 무시합니다.
+    if (hasLastEditedCell && cell == lastEditedCell) {
+        return;
+    }
+
+    applyEditToCell(cell.row, cell.col);
+    lastEditedCell = cell;
+    hasLastEditedCell = true;
 }
 
 // ------------------------------------------------------------
-// loadMazeFromFile
+// windowResized()
 // ------------------------------------------------------------
-// Reads a text maze from bin/data.
-// Supported symbols:
-// # = wall, . or space = empty, S = start, G = goal,
-// 2~9 = weighted cell with that movement cost, W = weighted cell with cost 5.
-bool ofApp::loadMazeFromFile(const string& filename) {
-    ofBuffer buffer = ofBufferFromFile(ofToDataPath(filename, true));
-    if (!buffer.size()) {
-        ofLogWarning("loadMazeFromFile") << "Could not load " << filename;
+// 창 크기가 바뀌면 미로 한 칸의 픽셀 크기와 시작 위치를 다시 계산합니다.
+// ------------------------------------------------------------
+void ofApp::windowResized(int w, int h) {
+    updateLayout();
+}
+
+// ------------------------------------------------------------
+// setupMazeFileList()
+// ------------------------------------------------------------
+// bin/data 폴더에 들어갈 샘플 미로 파일명을 등록합니다.
+// 파일명만 저장하는 이유는 OpenFrameworks의 ofBufferFromFile이 기본적으로
+// data 폴더를 기준으로 파일을 찾기 때문입니다.
+// ------------------------------------------------------------
+void ofApp::setupMazeFileList() {
+    mazeFiles = {
+        "maze_easy.txt",
+        "maze_weighted.txt",
+        "maze_large.txt"
+    };
+    currentMazeIndex = 0;
+}
+
+// ------------------------------------------------------------
+// loadMazeFromFile()
+// ------------------------------------------------------------
+// 텍스트 파일의 각 문자를 Cell로 변환하여 grid에 저장합니다.
+// #은 벽, .은 빈 칸, S는 시작점, G는 도착점, 2~9/W는 가중치 칸입니다.
+// ------------------------------------------------------------
+bool ofApp::loadMazeFromFile(const std::string& fileName) {
+    ofBuffer buffer = ofBufferFromFile(fileName);
+    if (buffer.size() == 0) {
+        ofLogWarning("MazePathfinderLab") << "Cannot read maze file: " << fileName;
         return false;
     }
 
-    vector<string> lines;
-    int maxCols = 0;
+    std::vector<std::string> lines;
 
-    // Read all non-empty lines first so that the grid can be rectangular.
-    for (const string& rawLine : buffer.getLines()) {
-        string line = rawLine;
+    // 파일의 모든 줄을 순회하면서 빈 줄을 제외합니다.
+    // 줄마다 길이가 다를 수 있으므로, 뒤에서 가장 긴 줄 길이에 맞추어 빈 칸을 보충합니다.
+    for (const std::string& rawLine : buffer.getLines()) {
+        std::string line = rawLine;
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
-        if (line.empty()) {
-            continue;
+        if (!line.empty()) {
+            lines.push_back(line);
         }
-        lines.push_back(line);
-        maxCols = max(maxCols, (int)line.size());
     }
 
-    if (lines.empty() || maxCols == 0) {
+    if (lines.empty()) {
         return false;
     }
 
-    rows = (int)lines.size();
-    cols = maxCols;
-    grid.assign(rows, vector<Cell>(cols, Cell(CellType::WALL, 1)));
+    rows = static_cast<int>(lines.size());
+    cols = 0;
+
+    // 가장 긴 줄의 길이를 cols로 사용합니다.
+    // 이렇게 하면 파일에 일부 짧은 줄이 있어도 grid가 직사각형 형태를 유지합니다.
+    for (const std::string& line : lines) {
+        cols = std::max(cols, static_cast<int>(line.size()));
+    }
+
+    grid.assign(rows, std::vector<Cell>(cols, Cell{}));
 
     bool hasStart = false;
     bool hasGoal = false;
 
-    // Convert characters into Cell objects.
+    // 각 문자 하나하나를 CellType과 cost로 변환합니다.
+    // 이중 반복문은 모든 칸을 한 번씩 읽으므로 시간복잡도는 O(rows*cols)입니다.
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c) {
-            char ch = (c < (int)lines[r].size()) ? lines[r][c] : '#';
+            const char ch = (c < static_cast<int>(lines[r].size())) ? lines[r][c] : '.';
+            Cell cell;
 
             if (ch == '#') {
-                grid[r][c] = Cell(CellType::WALL, 1);
+                cell.type = CellType::Wall;
+                cell.cost = 1;
             } else if (ch == 'S' || ch == 's') {
-                grid[r][c] = Cell(CellType::START, 1);
-                startNode = Node(r, c);
+                cell.type = CellType::Start;
+                cell.cost = 1;
+                start = {r, c};
                 hasStart = true;
-            } else if (ch == 'G' || ch == 'g' || ch == 'E' || ch == 'e') {
-                grid[r][c] = Cell(CellType::GOAL, 1);
-                goalNode = Node(r, c);
+            } else if (ch == 'G' || ch == 'g') {
+                cell.type = CellType::Goal;
+                cell.cost = 1;
+                goal = {r, c};
                 hasGoal = true;
             } else if (ch >= '2' && ch <= '9') {
-                grid[r][c] = Cell(CellType::WEIGHT, ch - '0');
+                cell.type = CellType::Weight;
+                cell.cost = ch - '0';
             } else if (ch == 'W' || ch == 'w') {
-                grid[r][c] = Cell(CellType::WEIGHT, 5);
+                cell.type = CellType::Weight;
+                cell.cost = 5;
             } else {
-                grid[r][c] = Cell(CellType::EMPTY, 1);
+                cell.type = CellType::Empty;
+                cell.cost = 1;
             }
+
+            grid[r][c] = cell;
         }
     }
 
-    // Safety fallback if the text file forgot to mark S or G.
+    // 파일에 S 또는 G가 없을 경우 안전한 기본 위치를 지정합니다.
+    // 제출 환경에서 잘못된 파일을 읽어도 프로그램이 바로 종료되지 않게 하기 위한 방어 코드입니다.
     if (!hasStart) {
-        startNode = Node(1, 1);
-        if (inBounds(startNode.row, startNode.col)) {
-            grid[startNode.row][startNode.col] = Cell(CellType::START, 1);
+        start = {1, 1};
+        if (isInside(start.row, start.col)) {
+            grid[start.row][start.col] = {CellType::Start, 1};
         }
     }
     if (!hasGoal) {
-        goalNode = Node(rows - 2, cols - 2);
-        if (inBounds(goalNode.row, goalNode.col)) {
-            grid[goalNode.row][goalNode.col] = Cell(CellType::GOAL, 1);
+        goal = {std::max(1, rows - 2), std::max(1, cols - 2)};
+        if (isInside(goal.row, goal.col)) {
+            grid[goal.row][goal.col] = {CellType::Goal, 1};
         }
     }
 
-    resetVisualization();
+    updateLayout();
+    resetSearchState();
     return true;
 }
 
 // ------------------------------------------------------------
-// loadNextMazeFile
+// createEmptyMaze()
 // ------------------------------------------------------------
-// Cycles through sample maze files.
-void ofApp::loadNextMazeFile() {
-    if (mazeFiles.empty()) {
+// 테두리만 벽으로 막힌 빈 미로를 생성합니다.
+// 사용자가 마우스로 직접 벽과 가중치 칸을 배치하여 알고리즘을 실험할 수 있습니다.
+// ------------------------------------------------------------
+void ofApp::createEmptyMaze(int newRows, int newCols) {
+    rows = std::max(5, newRows);
+    cols = std::max(5, newCols);
+    grid.assign(rows, std::vector<Cell>(cols, Cell{}));
+
+    // 테두리를 벽으로 만드는 반복문입니다.
+    // 미로 밖으로 탐색이 나가는 경우를 시각적으로 막고, 실험 환경을 명확히 합니다.
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            const bool boundary = (r == 0 || c == 0 || r == rows - 1 || c == cols - 1);
+            grid[r][c].type = boundary ? CellType::Wall : CellType::Empty;
+            grid[r][c].cost = 1;
+        }
+    }
+
+    start = {1, 1};
+    goal = {rows - 2, cols - 2};
+    grid[start.row][start.col] = {CellType::Start, 1};
+    grid[goal.row][goal.col] = {CellType::Goal, 1};
+
+    updateLayout();
+    resetSearchState();
+}
+
+// ------------------------------------------------------------
+// updateLayout()
+// ------------------------------------------------------------
+// 현재 창 크기와 미로 크기를 기준으로 셀 크기와 출력 위치를 계산합니다.
+// 우측 패널 공간을 제외한 영역 안에 미로가 최대한 크게 들어가도록 합니다.
+// ------------------------------------------------------------
+void ofApp::updateLayout() {
+    if (rows <= 0 || cols <= 0) {
         return;
     }
-    currentMazeFileIndex = (currentMazeFileIndex + 1) % mazeFiles.size();
-    loadMazeFromFile(mazeFiles[currentMazeFileIndex]);
+
+    const int padding = 28;
+    const int availableWidth = std::max(200, ofGetWidth() - sidePanelWidth - padding * 3);
+    const int availableHeight = std::max(200, ofGetHeight() - padding * 2);
+
+    const int sizeByWidth = availableWidth / cols;
+    const int sizeByHeight = availableHeight / rows;
+
+    cellSize = std::max(8, std::min(sizeByWidth, sizeByHeight));
+    offsetX = padding;
+    offsetY = padding;
 }
 
 // ------------------------------------------------------------
-// generateRandomMaze
+// resetSearchState()
 // ------------------------------------------------------------
-// Generates a maze using recursive backtracking.
-// This algorithm starts with all walls and carves passages two cells at a time.
-// A stack is used instead of recursive function calls to make the data structure
-// explicit for the report and to avoid recursion-depth problems.
-void ofApp::generateRandomMaze(int desiredRows, int desiredCols) {
-    // Maze generation works best with odd sizes.
-    rows = (desiredRows % 2 == 0) ? desiredRows + 1 : desiredRows;
-    cols = (desiredCols % 2 == 0) ? desiredCols + 1 : desiredCols;
-
-    grid.assign(rows, vector<Cell>(cols, Cell(CellType::WALL, 1)));
-
-    vector<vector<bool>> carved(rows, vector<bool>(cols, false));
-    stack<Node> st;
-
-    Node start(1, 1);
-    grid[start.row][start.col] = Cell(CellType::EMPTY, 1);
-    carved[start.row][start.col] = true;
-    st.push(start);
-
-    const int dr[4] = {-2, 2, 0, 0};
-    const int dc[4] = {0, 0, -2, 2};
-
-    while (!st.empty()) {
-        Node current = st.top();
-        vector<int> dirs = {0, 1, 2, 3};
-        static std::mt19937 rng(std::random_device{}());
-        std::shuffle(dirs.begin(), dirs.end(), rng);
-
-        bool moved = false;
-        for (int dir : dirs) {
-            int nr = current.row + dr[dir];
-            int nc = current.col + dc[dir];
-
-            // Continue carving only if the target cell is inside the border.
-            if (nr > 0 && nr < rows - 1 && nc > 0 && nc < cols - 1 && !carved[nr][nc]) {
-                int wallR = current.row + dr[dir] / 2;
-                int wallC = current.col + dc[dir] / 2;
-
-                grid[wallR][wallC] = Cell(CellType::EMPTY, 1);
-                grid[nr][nc] = Cell(CellType::EMPTY, 1);
-                carved[nr][nc] = true;
-
-                st.push(Node(nr, nc));
-                moved = true;
-                break;
-            }
-        }
-
-        // If there is no unvisited neighbor, backtrack.
-        if (!moved) {
-            st.pop();
-        }
-    }
-
-    startNode = Node(1, 1);
-    goalNode = Node(rows - 2, cols - 2);
-    grid[startNode.row][startNode.col] = Cell(CellType::START, 1);
-    grid[goalNode.row][goalNode.col] = Cell(CellType::GOAL, 1);
-
-    addRandomWeights(0.14f);
+// 탐색 결과와 애니메이션 상태를 초기화합니다.
+// 미로를 편집하거나 새 파일을 로드하면 기존 경로가 더 이상 유효하지 않으므로 반드시 호출합니다.
+// ------------------------------------------------------------
+void ofApp::resetSearchState() {
+    visitOrder.clear();
+    finalPath.clear();
+    visitedAnimationIndex = 0;
+    pathAnimationIndex = 0;
+    isAnimating = false;
+    isPaused = false;
+    currentAlgorithmName = "None";
+    lastStats = SearchStats{};
+    initializeVisibleArrays();
 }
 
 // ------------------------------------------------------------
-// addRandomWeights
+// initializeVisibleArrays()
 // ------------------------------------------------------------
-// Adds weighted cells to empty passages. Weighted cells make Dijkstra and A*
-// meaningfully different from BFS because the best path is not always the
-// path with the smallest number of steps.
-void ofApp::addRandomWeights(float probability) {
-    for (int r = 1; r < rows - 1; ++r) {
-        for (int c = 1; c < cols - 1; ++c) {
-            if (grid[r][c].type == CellType::EMPTY && ofRandom(1.0f) < probability) {
-                int randomCost = (ofRandom(1.0f) < 0.5f) ? 3 : 5;
-                grid[r][c] = Cell(CellType::WEIGHT, randomCost);
-            }
-        }
-    }
+// 화면 표시용 bool 배열을 grid 크기에 맞추어 다시 생성합니다.
+// 계산 결과와 표시 결과를 분리해 두면 애니메이션 구현이 단순해집니다.
+// ------------------------------------------------------------
+void ofApp::initializeVisibleArrays() {
+    visibleVisited.assign(rows, std::vector<bool>(cols, false));
+    visiblePath.assign(rows, std::vector<bool>(cols, false));
 }
 
 // ------------------------------------------------------------
-// clearMazeToEmpty
+// isInside(), isWalkable(), getMoveCost()
 // ------------------------------------------------------------
-// Builds an empty bordered grid. Useful when the user wants to design a custom
-// maze with the mouse.
-void ofApp::clearMazeToEmpty(int newRows, int newCols) {
-    rows = newRows;
-    cols = newCols;
-    grid.assign(rows, vector<Cell>(cols, Cell(CellType::EMPTY, 1)));
+// 네 알고리즘이 공통으로 사용하는 격자 검사 함수입니다.
+// 이동 가능성 판단을 한곳에 모아 중복 코드를 줄였습니다.
+// ------------------------------------------------------------
+bool ofApp::isInside(int row, int col) const {
+    return row >= 0 && row < rows && col >= 0 && col < cols;
+}
 
-    for (int r = 0; r < rows; ++r) {
-        for (int c = 0; c < cols; ++c) {
-            if (r == 0 || c == 0 || r == rows - 1 || c == cols - 1) {
-                grid[r][c] = Cell(CellType::WALL, 1);
-            }
-        }
+bool ofApp::isWalkable(int row, int col) const {
+    return isInside(row, col) && grid[row][col].type != CellType::Wall;
+}
+
+int ofApp::getMoveCost(int row, int col) const {
+    if (!isInside(row, col)) {
+        return INF;
     }
-
-    startNode = Node(1, 1);
-    goalNode = Node(rows - 2, cols - 2);
-    grid[startNode.row][startNode.col] = Cell(CellType::START, 1);
-    grid[goalNode.row][goalNode.col] = Cell(CellType::GOAL, 1);
+    return std::max(1, grid[row][col].cost);
 }
 
 // ------------------------------------------------------------
-// drawMaze
+// manhattanDistance()
 // ------------------------------------------------------------
-// Draws every cell of the maze with borders.
-void ofApp::drawMaze() {
-    ofPushStyle();
-
-    // Title above the maze.
-    ofSetColor(235);
-    ofDrawBitmapString("Maze Pathfinder Lab", mazeX, 18);
-
-    for (int r = 0; r < rows; ++r) {
-        for (int c = 0; c < cols; ++c) {
-            float x = mazeX + c * cellSize;
-            float y = mazeY + r * cellSize;
-            drawCell(r, c, x, y, cellSize);
-        }
-    }
-
-    // Border around the entire maze.
-    ofNoFill();
-    ofSetColor(210);
-    ofDrawRectangle(mazeX, mazeY, cols * cellSize, rows * cellSize);
-    ofFill();
-
-    ofPopStyle();
+// A*의 휴리스틱 함수입니다.
+// 상하좌우 네 방향 이동만 허용하는 격자에서는 |dr|+|dc|가 자연스러운 거리 추정값입니다.
+// ------------------------------------------------------------
+int ofApp::manhattanDistance(const Node& a, const Node& b) const {
+    return std::abs(a.row - b.row) + std::abs(a.col - b.col);
 }
 
 // ------------------------------------------------------------
-// drawCell
+// getNeighbors()
 // ------------------------------------------------------------
-// Draws one square. Weighted cells show their cost number.
-void ofApp::drawCell(int r, int c, float x, float y, float size) {
-    ofColor color = getCellColor(r, c);
-
-    ofSetColor(color);
-    ofDrawRectangle(x, y, size, size);
-
-    // Small grid line makes the maze easier to read.
-    ofNoFill();
-    ofSetColor(50, 53, 60);
-    ofDrawRectangle(x, y, size, size);
-    ofFill();
-
-    // Draw cost number for weighted cells.
-    if (grid[r][c].type == CellType::WEIGHT && size >= 13.0f) {
-        ofSetColor(255);
-        ofDrawBitmapString(ofToString(grid[r][c].cost), x + size * 0.35f, y + size * 0.68f);
-    }
-}
-
+// 현재 칸에서 상하좌우로 이동 가능한 이웃 칸을 반환합니다.
+// 벽과 미로 범위 밖 좌표는 제외합니다.
 // ------------------------------------------------------------
-// getCellColor
-// ------------------------------------------------------------
-// Chooses color by combining static cell type and current animation state.
-ofColor ofApp::getCellColor(int r, int c) const {
-    if (grid[r][c].type == CellType::WALL) {
-        return ofColor(38, 41, 48);
-    }
-
-    if (visiblePath[r][c]) {
-        return ofColor(255, 210, 60);
-    }
-
-    if (grid[r][c].type == CellType::START) {
-        return ofColor(80, 220, 120);
-    }
-
-    if (grid[r][c].type == CellType::GOAL) {
-        return ofColor(255, 90, 90);
-    }
-
-    if (visibleVisited[r][c]) {
-        return ofColor(80, 145, 240);
-    }
-
-    if (grid[r][c].type == CellType::WEIGHT) {
-        return ofColor(145, 95, 210);
-    }
-
-    return ofColor(225, 228, 235);
-}
-
-// ------------------------------------------------------------
-// drawSidePanel
-// ------------------------------------------------------------
-// Draws algorithm statistics, current mode, keyboard guide, and legend.
-void ofApp::drawSidePanel() {
-    ofPushStyle();
-
-    float x = panelX;
-    float y = 40.0f;
-    float line = 20.0f;
-
-    ofSetColor(255);
-    ofDrawBitmapString("[ Project Summary ]", x, y);
-    y += line;
-    ofSetColor(220);
-    ofDrawBitmapString("Interactive pathfinding visualizer", x, y); y += line;
-    ofDrawBitmapString("Grid: " + ofToString(rows) + " x " + ofToString(cols), x, y); y += line;
-    ofDrawBitmapString("Edit Mode: " + getEditModeText(), x, y); y += line;
-    ofDrawBitmapString("Speed: " + ofToString(cellsPerFrame) + " cells/frame", x, y); y += line;
-    ofDrawBitmapString(string("Status: ") + (paused ? "Paused" : "Running"), x, y); y += line * 1.5f;
-
-    ofSetColor(255);
-    ofDrawBitmapString("[ Latest Algorithm Result ]", x, y);
-    y += line;
-
-    if (lastResult.algorithmName.empty()) {
-        ofSetColor(220);
-        ofDrawBitmapString("Press 1, 2, 3, or 4 to start.", x, y); y += line;
-    } else {
-        ofSetColor(235);
-        ofDrawBitmapString("Algorithm : " + lastResult.algorithmName, x, y); y += line;
-        ofDrawBitmapString("Found     : " + string(lastResult.found ? "YES" : "NO"), x, y); y += line;
-        ofDrawBitmapString("Visited   : " + ofToString(lastResult.visitedCount), x, y); y += line;
-        ofDrawBitmapString("Path Len  : " + ofToString((int)lastResult.path.size()), x, y); y += line;
-        ofDrawBitmapString("Path Cost : " + ofToString(lastResult.totalCost), x, y); y += line;
-        ofDrawBitmapString("Time      : " + ofToString(lastResult.elapsedMs, 4) + " ms", x, y); y += line;
-
-        int totalReveal = (int)lastResult.visitOrder.size() + (int)lastResult.path.size();
-        int doneReveal = min(animationIndex, (int)lastResult.visitOrder.size()) + min(pathAnimationIndex, (int)lastResult.path.size());
-        ofDrawBitmapString("Animation : " + ofToString(doneReveal) + " / " + ofToString(totalReveal), x, y); y += line;
-    }
-
-    y += line * 0.7f;
-    drawLegend(x, y);
-    y += 150.0f;
-
-    if (showHelp) {
-        ofSetColor(255);
-        ofDrawBitmapString("[ Controls ]", x, y); y += line;
-        ofSetColor(220);
-        ofDrawBitmapString("1 : Run BFS", x, y); y += line;
-        ofDrawBitmapString("2 : Run DFS", x, y); y += line;
-        ofDrawBitmapString("3 : Run Dijkstra", x, y); y += line;
-        ofDrawBitmapString("4 : Run A*", x, y); y += line;
-        ofDrawBitmapString("M : Change mouse edit mode", x, y); y += line;
-        ofDrawBitmapString("L : Load next sample maze", x, y); y += line;
-        ofDrawBitmapString("G : Generate random maze", x, y); y += line;
-        ofDrawBitmapString("C : Clear to empty grid", x, y); y += line;
-        ofDrawBitmapString("R : Reset visualization", x, y); y += line;
-        ofDrawBitmapString("P : Pause / resume animation", x, y); y += line;
-        ofDrawBitmapString("+/- : Animation speed", x, y); y += line;
-        ofDrawBitmapString("H : Hide/show guide", x, y); y += line;
-        ofDrawBitmapString("Mouse click/drag : edit cell", x, y); y += line;
-    }
-
-    ofPopStyle();
-}
-
-// ------------------------------------------------------------
-// drawLegend
-// ------------------------------------------------------------
-// Small legend for the colors used in the maze.
-void ofApp::drawLegend(float x, float y) {
-    struct LegendItem {
-        string name;
-        ofColor color;
-    };
-
-    vector<LegendItem> items = {
-        {"Wall", ofColor(38, 41, 48)},
-        {"Empty", ofColor(225, 228, 235)},
-        {"Visited", ofColor(80, 145, 240)},
-        {"Final Path", ofColor(255, 210, 60)},
-        {"Weighted", ofColor(145, 95, 210)},
-        {"Start", ofColor(80, 220, 120)},
-        {"Goal", ofColor(255, 90, 90)}
-    };
-
-    ofSetColor(255);
-    ofDrawBitmapString("[ Legend ]", x, y);
-    y += 18.0f;
-
-    for (const LegendItem& item : items) {
-        ofSetColor(item.color);
-        ofDrawRectangle(x, y - 11.0f, 14.0f, 14.0f);
-        ofSetColor(230);
-        ofDrawBitmapString(item.name, x + 22.0f, y);
-        y += 18.0f;
-    }
-}
-
-// ------------------------------------------------------------
-// getEditModeText
-// ------------------------------------------------------------
-// Converts EditMode enum into readable text.
-string ofApp::getEditModeText() const {
-    switch (editMode) {
-        case EditMode::WALL_EDIT: return "Wall Toggle";
-        case EditMode::START_EDIT: return "Move Start";
-        case EditMode::GOAL_EDIT: return "Move Goal";
-        case EditMode::WEIGHT_EDIT: return "Weight Toggle";
-    }
-    return "Unknown";
-}
-
-// ------------------------------------------------------------
-// runBFS
-// ------------------------------------------------------------
-// Breadth-First Search.
-// BFS uses queue and explores nodes in increasing number of steps.
-// In an unweighted maze, BFS gives the shortest path by number of cells.
-SearchResult ofApp::runBFS() {
-    SearchResult result;
-    result.algorithmName = "BFS (Queue)";
-
-    auto startTime = chrono::high_resolution_clock::now();
-
-    vector<vector<bool>> visited(rows, vector<bool>(cols, false));
-    vector<vector<Node>> parent(rows, vector<Node>(cols, Node(-1, -1)));
-    queue<Node> q;
-
-    q.push(startNode);
-    visited[startNode.row][startNode.col] = true;
-
-    while (!q.empty()) {
-        Node current = q.front();
-        q.pop();
-
-        result.visitOrder.push_back(current);
-
-        if (current == goalNode) {
-            result.found = true;
-            break;
-        }
-
-        vector<Node> neighbors = getNeighbors(current);
-        for (const Node& next : neighbors) {
-            if (!visited[next.row][next.col]) {
-                visited[next.row][next.col] = true;
-                parent[next.row][next.col] = current;
-                q.push(next);
-            }
-        }
-    }
-
-    if (result.found) {
-        result.path = reconstructPath(parent, goalNode);
-        result.totalCost = computePathCost(result.path);
-    }
-
-    auto endTime = chrono::high_resolution_clock::now();
-    result.elapsedMs = chrono::duration<double, std::milli>(endTime - startTime).count();
-    result.visitedCount = (int)result.visitOrder.size();
-    return result;
-}
-
-// ------------------------------------------------------------
-// runDFS
-// ------------------------------------------------------------
-// Depth-First Search.
-// DFS uses stack and goes as deep as possible before backtracking.
-// It can find a path, but the path is not guaranteed to be shortest.
-SearchResult ofApp::runDFS() {
-    SearchResult result;
-    result.algorithmName = "DFS (Stack)";
-
-    auto startTime = chrono::high_resolution_clock::now();
-
-    vector<vector<bool>> visited(rows, vector<bool>(cols, false));
-    vector<vector<Node>> parent(rows, vector<Node>(cols, Node(-1, -1)));
-    stack<Node> st;
-
-    st.push(startNode);
-    visited[startNode.row][startNode.col] = true;
-
-    while (!st.empty()) {
-        Node current = st.top();
-        st.pop();
-
-        result.visitOrder.push_back(current);
-
-        if (current == goalNode) {
-            result.found = true;
-            break;
-        }
-
-        vector<Node> neighbors = getNeighbors(current);
-        // Reverse order only to make DFS path visually different from BFS.
-        reverse(neighbors.begin(), neighbors.end());
-
-        for (const Node& next : neighbors) {
-            if (!visited[next.row][next.col]) {
-                visited[next.row][next.col] = true;
-                parent[next.row][next.col] = current;
-                st.push(next);
-            }
-        }
-    }
-
-    if (result.found) {
-        result.path = reconstructPath(parent, goalNode);
-        result.totalCost = computePathCost(result.path);
-    }
-
-    auto endTime = chrono::high_resolution_clock::now();
-    result.elapsedMs = chrono::duration<double, std::milli>(endTime - startTime).count();
-    result.visitedCount = (int)result.visitOrder.size();
-    return result;
-}
-
-// ------------------------------------------------------------
-// runDijkstra
-// ------------------------------------------------------------
-// Dijkstra's algorithm.
-// It uses priority_queue to always expand the lowest-cost node first.
-// Unlike BFS, it correctly handles weighted cells.
-SearchResult ofApp::runDijkstra() {
-    SearchResult result;
-    result.algorithmName = "Dijkstra (Priority Queue)";
-
-    auto startTime = chrono::high_resolution_clock::now();
-
-    const int INF = numeric_limits<int>::max() / 4;
-    vector<vector<int>> dist(rows, vector<int>(cols, INF));
-    vector<vector<bool>> closed(rows, vector<bool>(cols, false));
-    vector<vector<Node>> parent(rows, vector<Node>(cols, Node(-1, -1)));
-    priority_queue<PriorityState, vector<PriorityState>, PriorityCompare> pq;
-
-    dist[startNode.row][startNode.col] = 0;
-    pq.push({startNode, 0, 0});
-
-    while (!pq.empty()) {
-        PriorityState state = pq.top();
-        pq.pop();
-
-        Node current = state.node;
-        if (closed[current.row][current.col]) {
-            continue;
-        }
-
-        closed[current.row][current.col] = true;
-        result.visitOrder.push_back(current);
-
-        if (current == goalNode) {
-            result.found = true;
-            break;
-        }
-
-        for (const Node& next : getNeighbors(current)) {
-            int newCost = dist[current.row][current.col] + getMoveCost(next.row, next.col);
-            if (newCost < dist[next.row][next.col]) {
-                dist[next.row][next.col] = newCost;
-                parent[next.row][next.col] = current;
-                pq.push({next, newCost, newCost});
-            }
-        }
-    }
-
-    if (result.found) {
-        result.path = reconstructPath(parent, goalNode);
-        result.totalCost = dist[goalNode.row][goalNode.col];
-    }
-
-    auto endTime = chrono::high_resolution_clock::now();
-    result.elapsedMs = chrono::duration<double, std::milli>(endTime - startTime).count();
-    result.visitedCount = (int)result.visitOrder.size();
-    return result;
-}
-
-// ------------------------------------------------------------
-// runAStar
-// ------------------------------------------------------------
-// A* pathfinding.
-// A* uses f(n) = g(n) + h(n).
-// g(n) is the known cost from the start, and h(n) is Manhattan distance
-// to the goal. With this heuristic, A* usually visits fewer nodes than
-// Dijkstra while still finding an optimal path for this grid setting.
-SearchResult ofApp::runAStar() {
-    SearchResult result;
-    result.algorithmName = "A* (g + Manhattan h)";
-
-    auto startTime = chrono::high_resolution_clock::now();
-
-    const int INF = numeric_limits<int>::max() / 4;
-    vector<vector<int>> gCost(rows, vector<int>(cols, INF));
-    vector<vector<bool>> closed(rows, vector<bool>(cols, false));
-    vector<vector<Node>> parent(rows, vector<Node>(cols, Node(-1, -1)));
-    priority_queue<PriorityState, vector<PriorityState>, PriorityCompare> openSet;
-
-    gCost[startNode.row][startNode.col] = 0;
-    int startPriority = heuristicManhattan(startNode, goalNode);
-    openSet.push({startNode, startPriority, 0});
-
-    while (!openSet.empty()) {
-        PriorityState state = openSet.top();
-        openSet.pop();
-
-        Node current = state.node;
-        if (closed[current.row][current.col]) {
-            continue;
-        }
-
-        closed[current.row][current.col] = true;
-        result.visitOrder.push_back(current);
-
-        if (current == goalNode) {
-            result.found = true;
-            break;
-        }
-
-        for (const Node& next : getNeighbors(current)) {
-            int tentativeG = gCost[current.row][current.col] + getMoveCost(next.row, next.col);
-            if (tentativeG < gCost[next.row][next.col]) {
-                gCost[next.row][next.col] = tentativeG;
-                parent[next.row][next.col] = current;
-                int fCost = tentativeG + heuristicManhattan(next, goalNode);
-                openSet.push({next, fCost, tentativeG});
-            }
-        }
-    }
-
-    if (result.found) {
-        result.path = reconstructPath(parent, goalNode);
-        result.totalCost = gCost[goalNode.row][goalNode.col];
-    }
-
-    auto endTime = chrono::high_resolution_clock::now();
-    result.elapsedMs = chrono::duration<double, std::milli>(endTime - startTime).count();
-    result.visitedCount = (int)result.visitOrder.size();
-    return result;
-}
-
-// ------------------------------------------------------------
-// getNeighbors
-// ------------------------------------------------------------
-// Returns four-directional walkable neighbors.
-// The order is up, right, down, left so that results are deterministic.
-vector<Node> ofApp::getNeighbors(const Node& node) const {
-    vector<Node> neighbors;
-    const int dr[4] = {-1, 0, 1, 0};
-    const int dc[4] = {0, 1, 0, -1};
-
+std::vector<Node> ofApp::getNeighbors(const Node& node) const {
+    const int dr[4] = {-1, 1, 0, 0};
+    const int dc[4] = {0, 0, -1, 1};
+
+    std::vector<Node> neighbors;
+    neighbors.reserve(4);
+
+    // 네 방향을 하나씩 검사합니다.
+    // 격자 미로에서 각 정점의 최대 차수는 4이므로, 이 반복문은 상수 시간으로 볼 수 있습니다.
     for (int i = 0; i < 4; ++i) {
-        int nr = node.row + dr[i];
-        int nc = node.col + dc[i];
+        const int nr = node.row + dr[i];
+        const int nc = node.col + dc[i];
         if (isWalkable(nr, nc)) {
-            neighbors.push_back(Node(nr, nc));
+            neighbors.push_back({nr, nc});
         }
     }
 
     return neighbors;
 }
 
-bool ofApp::inBounds(int r, int c) const {
-    return r >= 0 && r < rows && c >= 0 && c < cols;
-}
+// ------------------------------------------------------------
+// reconstructPath()
+// ------------------------------------------------------------
+// parent 배열을 따라 goal에서 start까지 거꾸로 이동한 뒤 reverse하여
+// start -> goal 순서의 최종 경로를 만듭니다.
+// ------------------------------------------------------------
+std::vector<Node> ofApp::reconstructPath(const std::vector<std::vector<Node>>& parent) const {
+    std::vector<Node> path;
 
-bool ofApp::isWalkable(int r, int c) const {
-    return inBounds(r, c) && grid[r][c].type != CellType::WALL;
-}
-
-int ofApp::getMoveCost(int r, int c) const {
-    if (!inBounds(r, c)) {
-        return 999999;
+    if (!isInside(goal.row, goal.col)) {
+        return path;
     }
-    return max(1, grid[r][c].cost);
-}
 
-int ofApp::heuristicManhattan(const Node& a, const Node& b) const {
-    return abs(a.row - b.row) + abs(a.col - b.col);
-}
+    Node cur = goal;
 
-// ------------------------------------------------------------
-// reconstructPath
-// ------------------------------------------------------------
-// Rebuilds the final path by following parent links backward from the goal.
-vector<Node> ofApp::reconstructPath(const vector<vector<Node>>& parent, const Node& endNode) const {
-    vector<Node> path;
-    Node current = endNode;
-
-    while (inBounds(current.row, current.col)) {
-        path.push_back(current);
-        if (current == startNode) {
+    // parent가 {-1,-1}이면 더 이상 이전 칸이 없다는 뜻입니다.
+    // 정상적으로 goal에서 start까지 연결되어 있으면 마지막에 start를 만나게 됩니다.
+    while (isInside(cur.row, cur.col)) {
+        path.push_back(cur);
+        if (cur == start) {
             break;
         }
-        current = parent[current.row][current.col];
+
+        const Node next = parent[cur.row][cur.col];
+        if (next.row == -1 && next.col == -1) {
+            path.clear();
+            return path;
+        }
+        cur = next;
     }
 
-    reverse(path.begin(), path.end());
+    std::reverse(path.begin(), path.end());
     return path;
 }
 
 // ------------------------------------------------------------
-// computePathCost
+// computePathCost()
 // ------------------------------------------------------------
-// Sums movement costs along the path. The start cell cost is excluded because
-// the algorithm pays cost when it enters the next cell.
-int ofApp::computePathCost(const vector<Node>& path) const {
+// 경로의 총 이동 비용을 계산합니다.
+// 시작점에 서 있는 것은 이동이 아니므로 두 번째 칸부터 비용을 더합니다.
+// ------------------------------------------------------------
+int ofApp::computePathCost(const std::vector<Node>& path) const {
+    if (path.empty()) {
+        return 0;
+    }
+
     int cost = 0;
-    for (int i = 1; i < (int)path.size(); ++i) {
+
+    // i=1부터 시작하는 이유는 path[0]이 시작점이기 때문입니다.
+    // 이동 비용은 "다음 칸으로 들어가는 비용"으로 정의했습니다.
+    for (std::size_t i = 1; i < path.size(); ++i) {
         cost += getMoveCost(path[i].row, path[i].col);
     }
+
     return cost;
 }
 
 // ------------------------------------------------------------
-// resetVisualization
+// prepareAnimation()
 // ------------------------------------------------------------
-// Clears animation state but keeps the maze itself.
-void ofApp::resetVisualization() {
-    resizeVisualArrays();
-    lastResult = SearchResult();
-    animationIndex = 0;
+// 알고리즘 계산 결과를 화면 애니메이션 상태로 복사합니다.
+// 알고리즘 로직과 렌더링 로직을 분리하기 위한 중간 단계입니다.
+// ------------------------------------------------------------
+void ofApp::prepareAnimation(const std::string& algorithmName,
+                             const std::vector<Node>& visited,
+                             const std::vector<Node>& path,
+                             const SearchStats& stats) {
+    currentAlgorithmName = algorithmName;
+    visitOrder = visited;
+    finalPath = path;
+    lastStats = stats;
+
+    visitedAnimationIndex = 0;
     pathAnimationIndex = 0;
-    paused = false;
-}
+    lastAnimationStepTime = ofGetElapsedTimef();
+    isAnimating = true;
+    isPaused = false;
 
-void ofApp::prepareAnimation(const SearchResult& result) {
-    resizeVisualArrays();
-    lastResult = result;
-    animationIndex = 0;
-    pathAnimationIndex = 0;
-    paused = false;
-}
-
-void ofApp::resizeVisualArrays() {
-    visibleVisited.assign(rows, vector<bool>(cols, false));
-    visiblePath.assign(rows, vector<bool>(cols, false));
+    initializeVisibleArrays();
 }
 
 // ------------------------------------------------------------
-// runAndStoreResult
+// runBFS()
 // ------------------------------------------------------------
-// Dispatches to the selected algorithm and prepares animation.
-void ofApp::runAndStoreResult(int algorithmNumber) {
-    SearchResult result;
+// BFS(Breadth-First Search)는 queue를 사용하여 시작점에서 가까운 깊이의 노드부터 탐색합니다.
+// 모든 간선 비용이 동일한 일반 미로에서는 최단 칸 수 경로를 보장합니다.
+// 단, 가중치 칸이 있으면 이동 비용을 고려하지 않으므로 최소 비용 경로는 보장하지 않습니다.
+// 시간복잡도: O(V+E), 공간복잡도: O(V)
+// ------------------------------------------------------------
+void ofApp::runBFS() {
+    const auto t0 = std::chrono::high_resolution_clock::now();
 
-    if (algorithmNumber == 1) {
-        result = runBFS();
-    } else if (algorithmNumber == 2) {
-        result = runDFS();
-    } else if (algorithmNumber == 3) {
-        result = runDijkstra();
-    } else if (algorithmNumber == 4) {
-        result = runAStar();
+    std::queue<Node> q;
+    std::vector<std::vector<bool>> visited(rows, std::vector<bool>(cols, false));
+    std::vector<std::vector<Node>> parent(rows, std::vector<Node>(cols, {-1, -1}));
+    std::vector<Node> visitedOrder;
+
+    q.push(start);
+    visited[start.row][start.col] = true;
+
+    bool found = false;
+
+    // queue가 빌 때까지 탐색합니다.
+    // 각 칸은 visited가 true가 된 뒤 다시 queue에 들어가지 않으므로 전체 시간은 O(V+E)입니다.
+    while (!q.empty()) {
+        Node cur = q.front();
+        q.pop();
+        visitedOrder.push_back(cur);
+
+        if (cur == goal) {
+            found = true;
+            break;
+        }
+
+        // 현재 칸의 상하좌우 이웃을 확인합니다.
+        // 아직 방문하지 않은 통과 가능 칸만 queue에 넣고 parent를 기록합니다.
+        for (const Node& next : getNeighbors(cur)) {
+            if (!visited[next.row][next.col]) {
+                visited[next.row][next.col] = true;
+                parent[next.row][next.col] = cur;
+                q.push(next);
+            }
+        }
     }
 
-    prepareAnimation(result);
+    std::vector<Node> path = found ? reconstructPath(parent) : std::vector<Node>{};
+
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const double elapsedMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    SearchStats stats;
+    stats.found = found;
+    stats.visitedCount = static_cast<int>(visitedOrder.size());
+    stats.pathLength = static_cast<int>(path.size());
+    stats.pathCost = computePathCost(path);
+    stats.elapsedMs = elapsedMs;
+
+    prepareAnimation("BFS", visitedOrder, path, stats);
 }
 
 // ------------------------------------------------------------
-// cycleEditMode
+// runDFS()
 // ------------------------------------------------------------
-// Rotates mouse editing behavior.
-void ofApp::cycleEditMode() {
-    if (editMode == EditMode::WALL_EDIT) {
-        editMode = EditMode::START_EDIT;
-    } else if (editMode == EditMode::START_EDIT) {
-        editMode = EditMode::GOAL_EDIT;
-    } else if (editMode == EditMode::GOAL_EDIT) {
-        editMode = EditMode::WEIGHT_EDIT;
-    } else {
-        editMode = EditMode::WALL_EDIT;
+// DFS(Depth-First Search)는 stack을 사용하여 한 방향으로 최대한 깊게 들어간 뒤 되돌아옵니다.
+// 경로를 찾을 수는 있지만, 최단 칸 수 또는 최소 비용 경로를 보장하지 않습니다.
+// BFS와 비교하면 탐색 순서의 차이를 시각적으로 보여주기 좋습니다.
+// 시간복잡도: O(V+E), 공간복잡도: O(V)
+// ------------------------------------------------------------
+void ofApp::runDFS() {
+    const auto t0 = std::chrono::high_resolution_clock::now();
+
+    std::stack<Node> st;
+    std::vector<std::vector<bool>> visited(rows, std::vector<bool>(cols, false));
+    std::vector<std::vector<Node>> parent(rows, std::vector<Node>(cols, {-1, -1}));
+    std::vector<Node> visitedOrder;
+
+    st.push(start);
+    visited[start.row][start.col] = true;
+
+    bool found = false;
+
+    // stack의 LIFO 특성 때문에 가장 최근에 넣은 이웃을 먼저 탐색합니다.
+    // 방문 처리를 push 시점에 수행하여 같은 칸이 stack에 중복으로 들어가는 것을 막습니다.
+    while (!st.empty()) {
+        Node cur = st.top();
+        st.pop();
+        visitedOrder.push_back(cur);
+
+        if (cur == goal) {
+            found = true;
+            break;
+        }
+
+        std::vector<Node> neighbors = getNeighbors(cur);
+
+        // DFS의 화면 흐름이 위/왼쪽으로만 치우치지 않도록 이웃 순서를 반전합니다.
+        // 알고리즘의 본질은 stack 기반 깊이 우선 탐색이라는 점에서 변하지 않습니다.
+        std::reverse(neighbors.begin(), neighbors.end());
+
+        for (const Node& next : neighbors) {
+            if (!visited[next.row][next.col]) {
+                visited[next.row][next.col] = true;
+                parent[next.row][next.col] = cur;
+                st.push(next);
+            }
+        }
     }
+
+    std::vector<Node> path = found ? reconstructPath(parent) : std::vector<Node>{};
+
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const double elapsedMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    SearchStats stats;
+    stats.found = found;
+    stats.visitedCount = static_cast<int>(visitedOrder.size());
+    stats.pathLength = static_cast<int>(path.size());
+    stats.pathCost = computePathCost(path);
+    stats.elapsedMs = elapsedMs;
+
+    prepareAnimation("DFS", visitedOrder, path, stats);
 }
 
 // ------------------------------------------------------------
-// screenToCell
+// runDijkstra()
 // ------------------------------------------------------------
-// Converts mouse screen position into grid coordinate.
-bool ofApp::screenToCell(int x, int y, int& outRow, int& outCol) const {
-    if (cellSize <= 0.0f) {
+// Dijkstra 알고리즘은 priority_queue를 사용하여 현재까지의 누적 비용이 가장 작은 칸을 먼저 확장합니다.
+// 모든 이동 비용이 0 이상일 때 시작점에서 각 칸까지의 최소 비용을 구할 수 있습니다.
+// 가중치 셀이 있는 미로에서 BFS와 다른 결과가 나오는 핵심 알고리즘입니다.
+// 시간복잡도: O((V+E)logV), 공간복잡도: O(V)
+// ------------------------------------------------------------
+void ofApp::runDijkstra() {
+    const auto t0 = std::chrono::high_resolution_clock::now();
+
+    std::priority_queue<PriorityState> pq;
+    std::vector<std::vector<int>> dist(rows, std::vector<int>(cols, INF));
+    std::vector<std::vector<bool>> finalized(rows, std::vector<bool>(cols, false));
+    std::vector<std::vector<Node>> parent(rows, std::vector<Node>(cols, {-1, -1}));
+    std::vector<Node> visitedOrder;
+
+    dist[start.row][start.col] = 0;
+    pq.push({start.row, start.col, 0, 0});
+
+    bool found = false;
+
+    // priority_queue에서 꺼낸 칸은 현재까지 알려진 비용이 가장 작은 후보입니다.
+    // finalized 배열은 이미 확정된 칸을 다시 처리하지 않도록 막습니다.
+    while (!pq.empty()) {
+        PriorityState state = pq.top();
+        pq.pop();
+
+        if (finalized[state.row][state.col]) {
+            continue;
+        }
+
+        finalized[state.row][state.col] = true;
+        Node cur{state.row, state.col};
+        visitedOrder.push_back(cur);
+
+        if (cur == goal) {
+            found = true;
+            break;
+        }
+
+        // Relaxation 단계입니다.
+        // 현재 칸을 거쳐 이웃으로 가는 비용이 기존 dist보다 작으면 dist와 parent를 갱신합니다.
+        for (const Node& next : getNeighbors(cur)) {
+            const int newDist = dist[cur.row][cur.col] + getMoveCost(next.row, next.col);
+            if (newDist < dist[next.row][next.col]) {
+                dist[next.row][next.col] = newDist;
+                parent[next.row][next.col] = cur;
+                pq.push({next.row, next.col, newDist, newDist});
+            }
+        }
+    }
+
+    std::vector<Node> path = found ? reconstructPath(parent) : std::vector<Node>{};
+
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const double elapsedMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    SearchStats stats;
+    stats.found = found;
+    stats.visitedCount = static_cast<int>(visitedOrder.size());
+    stats.pathLength = static_cast<int>(path.size());
+    stats.pathCost = found ? dist[goal.row][goal.col] : 0;
+    stats.elapsedMs = elapsedMs;
+
+    prepareAnimation("Dijkstra", visitedOrder, path, stats);
+}
+
+// ------------------------------------------------------------
+// runAStar()
+// ------------------------------------------------------------
+// A*는 실제 누적 비용 g(n)과 목표까지의 추정 비용 h(n)을 더한 f(n)=g(n)+h(n)을 우선순위로 사용합니다.
+// 여기서는 h(n)으로 Manhattan Distance를 사용합니다.
+// 휴리스틱이 과대평가하지 않으면 Dijkstra보다 적은 노드를 방문하면서도 최적 경로를 찾을 수 있습니다.
+// 시간복잡도: 최악 O((V+E)logV), 공간복잡도: O(V)
+// ------------------------------------------------------------
+void ofApp::runAStar() {
+    const auto t0 = std::chrono::high_resolution_clock::now();
+
+    std::priority_queue<PriorityState> pq;
+    std::vector<std::vector<int>> gScore(rows, std::vector<int>(cols, INF));
+    std::vector<std::vector<bool>> closed(rows, std::vector<bool>(cols, false));
+    std::vector<std::vector<Node>> parent(rows, std::vector<Node>(cols, {-1, -1}));
+    std::vector<Node> visitedOrder;
+
+    gScore[start.row][start.col] = 0;
+    pq.push({start.row, start.col, manhattanDistance(start, goal), 0});
+
+    bool found = false;
+
+    // priority_queue는 f(n)=g(n)+h(n)이 작은 칸을 먼저 꺼냅니다.
+    // h(n)이 목표 방향 정보를 제공하기 때문에 Dijkstra보다 탐색 범위가 줄어드는 경우가 많습니다.
+    while (!pq.empty()) {
+        PriorityState state = pq.top();
+        pq.pop();
+
+        if (closed[state.row][state.col]) {
+            continue;
+        }
+
+        closed[state.row][state.col] = true;
+        Node cur{state.row, state.col};
+        visitedOrder.push_back(cur);
+
+        if (cur == goal) {
+            found = true;
+            break;
+        }
+
+        // 현재 칸을 통해 이웃으로 이동하는 실제 비용 g를 계산합니다.
+        // f는 이 실제 비용에 goal까지의 Manhattan Distance를 더한 값입니다.
+        for (const Node& next : getNeighbors(cur)) {
+            const int tentativeG = gScore[cur.row][cur.col] + getMoveCost(next.row, next.col);
+            if (tentativeG < gScore[next.row][next.col]) {
+                gScore[next.row][next.col] = tentativeG;
+                parent[next.row][next.col] = cur;
+
+                const int fScore = tentativeG + manhattanDistance(next, goal);
+                pq.push({next.row, next.col, fScore, tentativeG});
+            }
+        }
+    }
+
+    std::vector<Node> path = found ? reconstructPath(parent) : std::vector<Node>{};
+
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const double elapsedMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    SearchStats stats;
+    stats.found = found;
+    stats.visitedCount = static_cast<int>(visitedOrder.size());
+    stats.pathLength = static_cast<int>(path.size());
+    stats.pathCost = found ? gScore[goal.row][goal.col] : 0;
+    stats.elapsedMs = elapsedMs;
+
+    prepareAnimation("A*", visitedOrder, path, stats);
+}
+
+// ------------------------------------------------------------
+// generateRandomMaze()
+// ------------------------------------------------------------
+// Recursive Backtracking 방식으로 랜덤 미로를 생성합니다.
+// 명시적 stack을 사용하므로 재귀 호출 깊이 문제 없이 DFS 기반 미로 생성을 수행할 수 있습니다.
+// ------------------------------------------------------------
+void ofApp::generateRandomMaze() {
+    rows = 25;
+    cols = 35;
+    grid.assign(rows, std::vector<Cell>(cols, {CellType::Wall, 1}));
+
+    std::stack<Node> st;
+    std::vector<std::vector<bool>> carved(rows, std::vector<bool>(cols, false));
+
+    const Node seed{1, 1};
+    st.push(seed);
+    carved[seed.row][seed.col] = true;
+    grid[seed.row][seed.col] = {CellType::Empty, 1};
+
+    std::random_device rd;
+    std::mt19937 rng(rd());
+
+    // DFS와 비슷하게 stack의 top에서 갈 수 있는 방향을 고르고, 막히면 pop하여 되돌아갑니다.
+    // 두 칸씩 이동하는 이유는 중간 칸을 벽으로 남겨 두어 미로의 통로와 벽 구조를 만들기 위함입니다.
+    while (!st.empty()) {
+        Node cur = st.top();
+
+        std::vector<Node> directions = {
+            {-2, 0}, {2, 0}, {0, -2}, {0, 2}
+        };
+        std::shuffle(directions.begin(), directions.end(), rng);
+
+        bool moved = false;
+
+        for (const Node& d : directions) {
+            const int nr = cur.row + d.row;
+            const int nc = cur.col + d.col;
+
+            if (nr <= 0 || nr >= rows - 1 || nc <= 0 || nc >= cols - 1) {
+                continue;
+            }
+            if (carved[nr][nc]) {
+                continue;
+            }
+
+            const int betweenR = cur.row + d.row / 2;
+            const int betweenC = cur.col + d.col / 2;
+
+            grid[betweenR][betweenC] = {CellType::Empty, 1};
+            grid[nr][nc] = {CellType::Empty, 1};
+            carved[nr][nc] = true;
+
+            st.push({nr, nc});
+            moved = true;
+            break;
+        }
+
+        if (!moved) {
+            st.pop();
+        }
+    }
+
+    start = {1, 1};
+    goal = {rows - 2, cols - 2};
+
+    // 일부 빈 칸을 가중치 칸으로 바꿉니다.
+    // 이 단계 덕분에 BFS와 Dijkstra/A*의 차이를 랜덤 미로에서도 관찰할 수 있습니다.
+    for (int r = 1; r < rows - 1; ++r) {
+        for (int c = 1; c < cols - 1; ++c) {
+            if (grid[r][c].type == CellType::Empty && ofRandom(1.0f) < 0.07f) {
+                grid[r][c] = {CellType::Weight, 5};
+            }
+        }
+    }
+
+    grid[start.row][start.col] = {CellType::Start, 1};
+    grid[goal.row][goal.col] = {CellType::Goal, 1};
+
+    updateLayout();
+    resetSearchState();
+}
+
+// ------------------------------------------------------------
+// screenToCell()
+// ------------------------------------------------------------
+// 마우스의 픽셀 좌표를 미로의 row/col 좌표로 변환합니다.
+// 미로 영역 밖을 클릭한 경우 false를 반환합니다.
+// ------------------------------------------------------------
+bool ofApp::screenToCell(int x, int y, Node& outCell) const {
+    const int col = (x - offsetX) / cellSize;
+    const int row = (y - offsetY) / cellSize;
+
+    if (!isInside(row, col)) {
         return false;
     }
 
-    int c = (int)((x - mazeX) / cellSize);
-    int r = (int)((y - mazeY) / cellSize);
+    const int localX = x - offsetX;
+    const int localY = y - offsetY;
 
-    if (!inBounds(r, c)) {
+    if (localX < 0 || localY < 0 || localX >= cols * cellSize || localY >= rows * cellSize) {
         return false;
     }
 
-    outRow = r;
-    outCol = c;
+    outCell = {row, col};
     return true;
 }
 
 // ------------------------------------------------------------
-// applyEditToCell
+// applyEditToCell()
 // ------------------------------------------------------------
-// Modifies the selected cell depending on EditMode.
-void ofApp::applyEditToCell(int r, int c) {
-    if (!inBounds(r, c)) {
+// 현재 editMode에 따라 클릭한 칸을 수정합니다.
+// 시작점과 도착점은 항상 하나씩만 존재하도록 기존 위치를 Empty로 되돌린 뒤 새 위치를 지정합니다.
+// ------------------------------------------------------------
+void ofApp::applyEditToCell(int row, int col) {
+    if (!isInside(row, col)) {
         return;
     }
 
-    // Border walls are kept fixed so the maze remains visually clean.
-    if (r == 0 || c == 0 || r == rows - 1 || c == cols - 1) {
+    // 테두리 벽은 미로 구조를 안정적으로 유지하기 위해 시작점/도착점 이동 대상에서 제외합니다.
+    const bool boundary = (row == 0 || col == 0 || row == rows - 1 || col == cols - 1);
+    if (boundary) {
         return;
     }
 
-    if (editMode == EditMode::WALL_EDIT) {
-        if (Node(r, c) == startNode || Node(r, c) == goalNode) {
-            return;
-        }
-        if (grid[r][c].type == CellType::WALL) {
-            grid[r][c] = Cell(CellType::EMPTY, 1);
-        } else {
-            grid[r][c] = Cell(CellType::WALL, 1);
-        }
-    } else if (editMode == EditMode::START_EDIT) {
-        if (Node(r, c) == goalNode || grid[r][c].type == CellType::WALL) {
-            return;
-        }
-        grid[startNode.row][startNode.col] = Cell(CellType::EMPTY, 1);
-        startNode = Node(r, c);
-        grid[r][c] = Cell(CellType::START, 1);
-    } else if (editMode == EditMode::GOAL_EDIT) {
-        if (Node(r, c) == startNode || grid[r][c].type == CellType::WALL) {
-            return;
-        }
-        grid[goalNode.row][goalNode.col] = Cell(CellType::EMPTY, 1);
-        goalNode = Node(r, c);
-        grid[r][c] = Cell(CellType::GOAL, 1);
-    } else if (editMode == EditMode::WEIGHT_EDIT) {
-        if (Node(r, c) == startNode || Node(r, c) == goalNode || grid[r][c].type == CellType::WALL) {
-            return;
-        }
-        if (grid[r][c].type == CellType::WEIGHT) {
-            grid[r][c] = Cell(CellType::EMPTY, 1);
-        } else {
-            grid[r][c] = Cell(CellType::WEIGHT, 5);
+    Cell& cell = grid[row][col];
+
+    switch (editMode) {
+        case EditMode::ToggleWall:
+            if (Node{row, col} == start || Node{row, col} == goal) {
+                break;
+            }
+            cell.type = (cell.type == CellType::Wall) ? CellType::Empty : CellType::Wall;
+            cell.cost = 1;
+            break;
+
+        case EditMode::MoveStart:
+            if (Node{row, col} == goal) {
+                break;
+            }
+            grid[start.row][start.col] = {CellType::Empty, 1};
+            start = {row, col};
+            grid[start.row][start.col] = {CellType::Start, 1};
+            break;
+
+        case EditMode::MoveGoal:
+            if (Node{row, col} == start) {
+                break;
+            }
+            grid[goal.row][goal.col] = {CellType::Empty, 1};
+            goal = {row, col};
+            grid[goal.row][goal.col] = {CellType::Goal, 1};
+            break;
+
+        case EditMode::ToggleWeight:
+            if (Node{row, col} == start || Node{row, col} == goal) {
+                break;
+            }
+            if (cell.type == CellType::Weight) {
+                cell = {CellType::Empty, 1};
+            } else if (cell.type == CellType::Empty) {
+                cell = {CellType::Weight, 5};
+            }
+            break;
+    }
+
+    // 미로가 바뀌면 기존 방문 순서와 경로는 더 이상 현재 미로의 결과가 아닙니다.
+    // 따라서 즉시 초기화하여 잘못된 결과가 화면에 남지 않도록 합니다.
+    resetSearchState();
+}
+
+// ------------------------------------------------------------
+// editModeToString()
+// ------------------------------------------------------------
+// 현재 편집 모드를 사람이 읽기 쉬운 문자열로 변환합니다.
+// ------------------------------------------------------------
+std::string ofApp::editModeToString() const {
+    switch (editMode) {
+        case EditMode::ToggleWall:
+            return "Wall Toggle";
+        case EditMode::MoveStart:
+            return "Move Start";
+        case EditMode::MoveGoal:
+            return "Move Goal";
+        case EditMode::ToggleWeight:
+            return "Weight Toggle";
+    }
+    return "Unknown";
+}
+
+// ------------------------------------------------------------
+// drawMaze()
+// ------------------------------------------------------------
+// grid와 애니메이션 배열을 사용해 미로 전체를 그립니다.
+// 기본 칸 색상 위에 방문 색, 경로 색, 시작/도착 표시를 순서대로 덮어 씁니다.
+// ------------------------------------------------------------
+void ofApp::drawMaze() const {
+    ofPushStyle();
+
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            const int x = offsetX + c * cellSize;
+            const int y = offsetY + r * cellSize;
+
+            ofColor color = COLOR_EMPTY;
+            const Cell& cell = grid[r][c];
+
+            if (cell.type == CellType::Wall) {
+                color = COLOR_WALL;
+            } else if (cell.type == CellType::Weight) {
+                color = COLOR_WEIGHT;
+            } else if (cell.type == CellType::Start) {
+                color = COLOR_START;
+            } else if (cell.type == CellType::Goal) {
+                color = COLOR_GOAL;
+            }
+
+            ofSetColor(color);
+            ofDrawRectangle(x, y, cellSize, cellSize);
+
+            // 방문 칸은 기본 칸 색 위에 반투명 파란색을 덮어 표현합니다.
+            // 시작/도착/벽은 의미가 강하므로 방문 색을 덮지 않습니다.
+            if (visibleVisited[r][c] && cell.type != CellType::Wall && cell.type != CellType::Start && cell.type != CellType::Goal) {
+                ofSetColor(COLOR_VISITED);
+                ofDrawRectangle(x, y, cellSize, cellSize);
+            }
+
+            // 최종 경로는 방문 색보다 더 진한 색으로 표시합니다.
+            if (visiblePath[r][c] && cell.type != CellType::Wall) {
+                ofSetColor(COLOR_PATH);
+                ofDrawRectangle(x + 2, y + 2, cellSize - 4, cellSize - 4);
+            }
+
+            // 가중치 칸에는 비용 숫자를 표시하여 이동 비용의 의미를 분명하게 보여줍니다.
+            if (cell.type == CellType::Weight && cellSize >= 16) {
+                ofSetColor(COLOR_TEXT);
+                ofDrawBitmapString(std::to_string(cell.cost), x + cellSize / 2 - 3, y + cellSize / 2 + 4);
+            }
+
+            // 격자선을 그려 각 칸의 경계를 구분합니다.
+            ofNoFill();
+            ofSetColor(COLOR_GRID_LINE);
+            ofDrawRectangle(x, y, cellSize, cellSize);
+            ofFill();
         }
     }
 
-    // Editing changes the maze, so old algorithm visualization is cleared.
-    resetVisualization();
+    ofPopStyle();
+}
+
+// ------------------------------------------------------------
+// drawSidePanel()
+// ------------------------------------------------------------
+// 우측 패널에 조작법, 현재 알고리즘, 통계, 복잡도 정보를 표시합니다.
+// 제출 동영상에서 이 패널을 함께 보여주면 구현 기능과 알고리즘 설명이 명확해집니다.
+// ------------------------------------------------------------
+void ofApp::drawSidePanel() const {
+    const int panelX = offsetX + cols * cellSize + 28;
+    const int panelY = offsetY;
+    const int line = 21;
+    int y = panelY;
+
+    ofPushStyle();
+    ofSetColor(255);
+    ofDrawRectangle(panelX - 14, panelY - 18, sidePanelWidth - 24, ofGetHeight() - panelY * 2 + 12);
+
+    ofSetColor(COLOR_TEXT);
+    ofDrawBitmapString("Maze Pathfinder Lab", panelX, y);
+    y += line;
+    ofSetColor(COLOR_MUTED_TEXT);
+    ofDrawBitmapString("BFS / DFS / Dijkstra / A* visualizer", panelX, y);
+    y += line * 2;
+
+    ofSetColor(COLOR_TEXT);
+    ofDrawBitmapString("[Algorithm Keys]", panelX, y);
+    y += line;
+    ofSetColor(COLOR_MUTED_TEXT);
+    ofDrawBitmapString("1 BFS        2 DFS", panelX, y); y += line;
+    ofDrawBitmapString("3 Dijkstra   4 A*", panelX, y); y += line;
+    ofDrawBitmapString("L Load Maze  G Random Maze", panelX, y); y += line;
+    ofDrawBitmapString("C Clear      R Reset Result", panelX, y); y += line;
+    ofDrawBitmapString("P Pause      +/- Speed", panelX, y); y += line;
+    ofDrawBitmapString("M Edit Mode  H Help", panelX, y); y += line * 2;
+
+    ofSetColor(COLOR_TEXT);
+    ofDrawBitmapString("[Current State]", panelX, y);
+    y += line;
+    ofSetColor(COLOR_MUTED_TEXT);
+    ofDrawBitmapString("Algorithm : " + currentAlgorithmName, panelX, y); y += line;
+    ofDrawBitmapString("Edit Mode : " + editModeToString(), panelX, y); y += line;
+    ofDrawBitmapString("Maze Size : " + std::to_string(rows) + " x " + std::to_string(cols), panelX, y); y += line;
+    ofDrawBitmapString("Animation : " + std::string(isPaused ? "Paused" : (isAnimating ? "Running" : "Stopped")), panelX, y); y += line * 2;
+
+    ofSetColor(COLOR_TEXT);
+    ofDrawBitmapString("[Last Result]", panelX, y);
+    y += line;
+    ofSetColor(COLOR_MUTED_TEXT);
+    ofDrawBitmapString("Found       : " + std::string(lastStats.found ? "Yes" : "No"), panelX, y); y += line;
+    ofDrawBitmapString("Visited     : " + std::to_string(lastStats.visitedCount), panelX, y); y += line;
+    ofDrawBitmapString("Path Length : " + std::to_string(lastStats.pathLength), panelX, y); y += line;
+    ofDrawBitmapString("Path Cost   : " + std::to_string(lastStats.pathCost), panelX, y); y += line;
+    ofDrawBitmapString("Time        : " + ofToString(lastStats.elapsedMs, 4) + " ms", panelX, y); y += line * 2;
+
+    ofSetColor(COLOR_TEXT);
+    ofDrawBitmapString("[Complexity]", panelX, y);
+    y += line;
+    ofSetColor(COLOR_MUTED_TEXT);
+    ofDrawBitmapString("BFS / DFS     : O(V + E)", panelX, y); y += line;
+    ofDrawBitmapString("Dijkstra / A* : O((V+E)logV)", panelX, y); y += line;
+    ofDrawBitmapString("Space         : O(V)", panelX, y); y += line * 2;
+
+    drawLegend(panelX, y);
+    y += line * 7;
+
+    if (showHelp) {
+        drawHelpBox(panelX, y);
+    }
+
+    ofPopStyle();
+}
+
+// ------------------------------------------------------------
+// drawLegend()
+// ------------------------------------------------------------
+// 색상 범례를 출력합니다.
+// ------------------------------------------------------------
+void ofApp::drawLegend(int x, int y) const {
+    const int box = 13;
+    const int line = 20;
+
+    ofSetColor(COLOR_TEXT);
+    ofDrawBitmapString("[Legend]", x, y);
+    y += line;
+
+    const std::vector<std::pair<ofColor, std::string>> items = {
+        {COLOR_START, "Start"},
+        {COLOR_GOAL, "Goal"},
+        {COLOR_WALL, "Wall"},
+        {COLOR_WEIGHT, "Weight Cost"},
+        {COLOR_VISITED, "Visited Order"},
+        {COLOR_PATH, "Final Path"}
+    };
+
+    for (const auto& item : items) {
+        ofSetColor(item.first);
+        ofDrawRectangle(x, y - box + 3, box, box);
+        ofSetColor(COLOR_MUTED_TEXT);
+        ofDrawBitmapString(item.second, x + box + 8, y);
+        y += line;
+    }
+}
+
+// ------------------------------------------------------------
+// drawHelpBox()
+// ------------------------------------------------------------
+// 보고서/발표에서 설명하기 좋은 핵심 해석 포인트를 화면에도 표시합니다.
+// ------------------------------------------------------------
+void ofApp::drawHelpBox(int x, int y) const {
+    const int line = 19;
+
+    ofSetColor(COLOR_TEXT);
+    ofDrawBitmapString("[Interpretation Guide]", x, y);
+    y += line;
+
+    ofSetColor(COLOR_MUTED_TEXT);
+    ofDrawBitmapString("BFS: shortest number of steps", x, y); y += line;
+    ofDrawBitmapString("DFS: deep exploration, not optimal", x, y); y += line;
+    ofDrawBitmapString("Dijkstra: minimum total cost", x, y); y += line;
+    ofDrawBitmapString("A*: Dijkstra + goal heuristic", x, y); y += line;
+    ofDrawBitmapString("Weighted cells reveal cost-aware search.", x, y); y += line;
+    ofDrawBitmapString("Use mouse edit mode to create cases.", x, y);
 }
