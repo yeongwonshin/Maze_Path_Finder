@@ -1,6 +1,6 @@
 # Maze Pathfinder in OpenFramework
 
-[video](https://github.com/yeongwonshin/Maze_Path_Finder.git)
+[watch the demo video](https://github.com/yeongwonshin/Maze_Path_Finder.git)
 
 ![image](images/maze.png)
 An interactive openFrameworks project for visualizing and comparing classic pathfinding algorithms in a grid maze: **BFS**, **DFS**, **Dijkstra**, and **A\***.
