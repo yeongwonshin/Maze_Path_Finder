@@ -1,4 +1,4 @@
-# Maze Pathfinder Lab
+# Maze Pathfinder in OpenFramework
 
 [video](https://github.com/yeongwonshin/Maze_Path_Finder.git)
 
