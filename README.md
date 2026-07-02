@@ -2,6 +2,7 @@
 
 [video](https://github.com/yeongwonshin/Maze_Path_Finder.git)
 
+![image](images/maze.png)
 An interactive openFrameworks project for visualizing and comparing classic pathfinding algorithms in a grid maze: **BFS**, **DFS**, **Dijkstra**, and **A\***.
 
 This project is designed as both a working C++ application and an educational demonstration. Instead of showing only the final path, it animates the order in which each algorithm visits cells, reconstructs the final path, and reports quantitative results such as visited node count, path length, total path cost, and execution time.
